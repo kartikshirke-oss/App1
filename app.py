@@ -20,33 +20,48 @@ ticker = st.sidebar.text_input(
 ).upper()
 
 
-@st.cache_data
-def load_data(ticker):
-    data = yf.download(
-        ticker,
-        period="5y",
-        auto_adjust=True,
-        progress=False
-    )
+@st.cache_data(ttl=3600)
+def load_data(symbol):
 
-    # Fix MultiIndex issue
-    if isinstance(data.columns, pd.MultiIndex):
-        data.columns = data.columns.get_level_values(0)
+    try:
 
-    return data
+        data = yf.download(
+            symbol,
+            period="5y",
+            auto_adjust=True,
+            progress=False,
+            threads=False
+        )
+
+        if data is None or len(data) == 0:
+            return pd.DataFrame()
+
+        if isinstance(data.columns, pd.MultiIndex):
+            data.columns = data.columns.get_level_values(0)
+
+        return data
+
+    except Exception:
+        return pd.DataFrame()
 
 
 data = load_data(ticker)
 
 if data.empty:
-    st.error("No data found.")
+    st.error(
+        f"No data found for '{ticker}'. Try another ticker such as AAPL, MSFT, TSLA, INFY.NS or RELIANCE.NS"
+    )
     st.stop()
 
-close = data["Close"]
+if "Close" not in data.columns:
+    st.error("Close price column missing.")
+    st.stop()
 
-# ==========================
+close = data["Close"].squeeze()
+
+# ==========================================
 # Technical Indicators
-# ==========================
+# ==========================================
 
 data["SMA20"] = SMAIndicator(
     close=close,
@@ -93,25 +108,49 @@ bb = BollingerBands(
 data["BB_UPPER"] = bb.bollinger_hband()
 data["BB_LOWER"] = bb.bollinger_lband()
 
-# ==========================
+# ==========================================
+# Sidebar Snapshot
+# ==========================================
+
+st.sidebar.header("Current Snapshot")
+
+st.sidebar.metric(
+    "Current Price",
+    f"{float(close.iloc[-1]):.2f}"
+)
+
+high_52 = float(close.tail(252).max())
+low_52 = float(close.tail(252).min())
+
+st.sidebar.metric(
+    "52 Week High",
+    f"{high_52:.2f}"
+)
+
+st.sidebar.metric(
+    "52 Week Low",
+    f"{low_52:.2f}"
+)
+
+# ==========================================
 # Tabs
-# ==========================
+# ==========================================
 
 tab1, tab2, tab3 = st.tabs(
     [
         "Price Chart",
         "Technical Analysis",
-        "Fundamentals"
+        "Fundamental Analysis"
     ]
 )
 
-# ==========================
+# ==========================================
 # PRICE TAB
-# ==========================
+# ==========================================
 
 with tab1:
 
-    st.subheader(f"{ticker} Price Chart")
+    st.subheader(f"{ticker} Price Analysis")
 
     fig = go.Figure()
 
@@ -119,6 +158,7 @@ with tab1:
         go.Scatter(
             x=data.index,
             y=close,
+            mode="lines",
             name="Close"
         )
     )
@@ -127,7 +167,8 @@ with tab1:
         go.Scatter(
             x=data.index,
             y=data["SMA20"],
-            name="SMA20"
+            mode="lines",
+            name="SMA 20"
         )
     )
 
@@ -135,7 +176,8 @@ with tab1:
         go.Scatter(
             x=data.index,
             y=data["SMA50"],
-            name="SMA50"
+            mode="lines",
+            name="SMA 50"
         )
     )
 
@@ -143,14 +185,16 @@ with tab1:
         go.Scatter(
             x=data.index,
             y=data["SMA200"],
-            name="SMA200"
+            mode="lines",
+            name="SMA 200"
         )
     )
 
     fig.update_layout(
-        height=600,
+        height=650,
         xaxis_title="Date",
-        yaxis_title="Price"
+        yaxis_title="Price",
+        template="plotly_white"
     )
 
     st.plotly_chart(
@@ -158,35 +202,33 @@ with tab1:
         use_container_width=True
     )
 
-# ==========================
+# ==========================================
 # TECHNICAL TAB
-# ==========================
+# ==========================================
 
 with tab2:
 
-    st.subheader("RSI")
+    st.subheader("Relative Strength Index (RSI)")
 
-    rsi_df = pd.DataFrame({
-        "RSI": data["RSI"]
-    })
+    st.line_chart(
+        data["RSI"]
+    )
 
-    st.line_chart(rsi_df)
-
-    current_rsi = float(
+    latest_rsi = float(
         data["RSI"].dropna().iloc[-1]
     )
 
     st.metric(
         "Current RSI",
-        round(current_rsi, 2)
+        round(latest_rsi, 2)
     )
 
-    if current_rsi > 70:
-        st.warning("Overbought")
-    elif current_rsi < 30:
-        st.success("Oversold")
+    if latest_rsi > 70:
+        st.warning("Overbought Zone")
+    elif latest_rsi < 30:
+        st.success("Oversold Zone")
     else:
-        st.info("Neutral")
+        st.info("Neutral Zone")
 
     st.divider()
 
@@ -211,17 +253,18 @@ with tab2:
 
     st.line_chart(bb_df)
 
-# ==========================
+# ==========================================
 # FUNDAMENTALS TAB
-# ==========================
+# ==========================================
 
 with tab3:
 
-    st.subheader("Fundamental Analysis")
+    st.subheader("Fundamental Metrics")
 
     try:
 
-        info = yf.Ticker(ticker).info
+        stock = yf.Ticker(ticker)
+        info = stock.info
 
         fundamentals = {
             "Market Cap": info.get("marketCap"),
@@ -248,27 +291,6 @@ with tab3:
 
     except Exception as e:
 
-        st.error(
-            f"Fundamental data unavailable: {e}"
+        st.warning(
+            f"Fundamental data currently unavailable: {e}"
         )
-
-# ==========================
-# SIDEBAR
-# ==========================
-
-st.sidebar.header("Current Snapshot")
-
-st.sidebar.metric(
-    "Current Price",
-    round(float(close.iloc[-1]), 2)
-)
-
-st.sidebar.metric(
-    "52 Week High",
-    round(float(close.tail(252).max()), 2)
-)
-
-st.sidebar.metric(
-    "52 Week Low",
-    round(float(close.tail(252).min()), 2)
-)
