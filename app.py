@@ -1,11 +1,16 @@
+```python
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import numpy as np
+
 import plotly.graph_objects as go
 
 from ta.trend import SMAIndicator, EMAIndicator, MACD
 from ta.momentum import RSIIndicator
 from ta.volatility import BollingerBands
+
+from statsmodels.tsa.arima.model import ARIMA
 
 st.set_page_config(
     page_title="AI Equity Research Platform",
@@ -23,45 +28,31 @@ ticker = st.sidebar.text_input(
 @st.cache_data(ttl=3600)
 def load_data(symbol):
 
-    try:
+    data = yf.download(
+        symbol,
+        period="5y",
+        auto_adjust=True,
+        progress=False,
+        threads=False
+    )
 
-        data = yf.download(
-            symbol,
-            period="5y",
-            auto_adjust=True,
-            progress=False,
-            threads=False
-        )
+    if isinstance(data.columns, pd.MultiIndex):
+        data.columns = data.columns.get_level_values(0)
 
-        if data is None or len(data) == 0:
-            return pd.DataFrame()
-
-        if isinstance(data.columns, pd.MultiIndex):
-            data.columns = data.columns.get_level_values(0)
-
-        return data
-
-    except Exception:
-        return pd.DataFrame()
+    return data
 
 
 data = load_data(ticker)
 
 if data.empty:
-    st.error(
-        f"No data found for '{ticker}'. Try another ticker such as AAPL, MSFT, TSLA, INFY.NS or RELIANCE.NS"
-    )
-    st.stop()
-
-if "Close" not in data.columns:
-    st.error("Close price column missing.")
+    st.error("No data found.")
     st.stop()
 
 close = data["Close"].squeeze()
 
-# ==========================================
+# =====================================
 # Technical Indicators
-# ==========================================
+# =====================================
 
 data["SMA20"] = SMAIndicator(
     close=close,
@@ -97,7 +88,6 @@ macd = MACD(close)
 
 data["MACD"] = macd.macd()
 data["MACD_SIGNAL"] = macd.macd_signal()
-data["MACD_HIST"] = macd.macd_diff()
 
 bb = BollingerBands(
     close=close,
@@ -108,45 +98,45 @@ bb = BollingerBands(
 data["BB_UPPER"] = bb.bollinger_hband()
 data["BB_LOWER"] = bb.bollinger_lband()
 
-# ==========================================
-# Sidebar Snapshot
-# ==========================================
+# =====================================
+# Sidebar Metrics
+# =====================================
 
-st.sidebar.header("Current Snapshot")
+st.sidebar.header("Market Snapshot")
+
+current_price = float(close.iloc[-1])
 
 st.sidebar.metric(
     "Current Price",
-    f"{float(close.iloc[-1]):.2f}"
-)
-
-high_52 = float(close.tail(252).max())
-low_52 = float(close.tail(252).min())
-
-st.sidebar.metric(
-    "52 Week High",
-    f"{high_52:.2f}"
+    f"{current_price:.2f}"
 )
 
 st.sidebar.metric(
-    "52 Week Low",
-    f"{low_52:.2f}"
+    "52W High",
+    f"{close.tail(252).max():.2f}"
 )
 
-# ==========================================
+st.sidebar.metric(
+    "52W Low",
+    f"{close.tail(252).min():.2f}"
+)
+
+# =====================================
 # Tabs
-# ==========================================
+# =====================================
 
-tab1, tab2, tab3 = st.tabs(
+tab1, tab2, tab3, tab4 = st.tabs(
     [
-        "Price Chart",
-        "Technical Analysis",
-        "Fundamental Analysis"
+        "Price Analysis",
+        "Technical Indicators",
+        "Risk Analytics",
+        "Forecasting"
     ]
 )
 
-# ==========================================
-# PRICE TAB
-# ==========================================
+# =====================================
+# PRICE ANALYSIS
+# =====================================
 
 with tab1:
 
@@ -158,7 +148,6 @@ with tab1:
         go.Scatter(
             x=data.index,
             y=close,
-            mode="lines",
             name="Close"
         )
     )
@@ -167,8 +156,7 @@ with tab1:
         go.Scatter(
             x=data.index,
             y=data["SMA20"],
-            mode="lines",
-            name="SMA 20"
+            name="SMA20"
         )
     )
 
@@ -176,8 +164,7 @@ with tab1:
         go.Scatter(
             x=data.index,
             y=data["SMA50"],
-            mode="lines",
-            name="SMA 50"
+            name="SMA50"
         )
     )
 
@@ -185,15 +172,12 @@ with tab1:
         go.Scatter(
             x=data.index,
             y=data["SMA200"],
-            mode="lines",
-            name="SMA 200"
+            name="SMA200"
         )
     )
 
     fig.update_layout(
-        height=650,
-        xaxis_title="Date",
-        yaxis_title="Price",
+        height=600,
         template="plotly_white"
     )
 
@@ -202,13 +186,13 @@ with tab1:
         use_container_width=True
     )
 
-# ==========================================
-# TECHNICAL TAB
-# ==========================================
+# =====================================
+# TECHNICAL ANALYSIS
+# =====================================
 
 with tab2:
 
-    st.subheader("Relative Strength Index (RSI)")
+    st.subheader("RSI")
 
     st.line_chart(
         data["RSI"]
@@ -224,73 +208,151 @@ with tab2:
     )
 
     if latest_rsi > 70:
-        st.warning("Overbought Zone")
+        st.warning("Overbought")
+
     elif latest_rsi < 30:
-        st.success("Oversold Zone")
+        st.success("Oversold")
+
     else:
-        st.info("Neutral Zone")
+        st.info("Neutral")
 
     st.divider()
 
     st.subheader("MACD")
 
-    macd_df = pd.DataFrame({
-        "MACD": data["MACD"],
-        "Signal": data["MACD_SIGNAL"]
-    })
-
-    st.line_chart(macd_df)
+    st.line_chart(
+        pd.DataFrame({
+            "MACD": data["MACD"],
+            "Signal": data["MACD_SIGNAL"]
+        })
+    )
 
     st.divider()
 
     st.subheader("Bollinger Bands")
 
-    bb_df = pd.DataFrame({
-        "Close": close,
-        "Upper Band": data["BB_UPPER"],
-        "Lower Band": data["BB_LOWER"]
-    })
+    st.line_chart(
+        pd.DataFrame({
+            "Close": close,
+            "Upper": data["BB_UPPER"],
+            "Lower": data["BB_LOWER"]
+        })
+    )
 
-    st.line_chart(bb_df)
-
-# ==========================================
-# FUNDAMENTALS TAB
-# ==========================================
+# =====================================
+# RISK ANALYTICS
+# =====================================
 
 with tab3:
 
-    st.subheader("Fundamental Metrics")
+    returns = close.pct_change().dropna()
 
-    try:
+    annual_vol = (
+        returns.std() * np.sqrt(252)
+    ) * 100
 
-        stock = yf.Ticker(ticker)
-        info = stock.info
+    sharpe = (
+        returns.mean() /
+        returns.std()
+    ) * np.sqrt(252)
 
-        fundamentals = {
-            "Market Cap": info.get("marketCap"),
-            "Trailing PE": info.get("trailingPE"),
-            "Forward PE": info.get("forwardPE"),
-            "PEG Ratio": info.get("pegRatio"),
-            "Price To Book": info.get("priceToBook"),
-            "Dividend Yield": info.get("dividendYield"),
-            "ROE": info.get("returnOnEquity"),
-            "Revenue Growth": info.get("revenueGrowth"),
-            "Profit Margin": info.get("profitMargins"),
-            "Debt To Equity": info.get("debtToEquity")
-        }
+    drawdown = (
+        close /
+        close.cummax()
+    ) - 1
 
-        fundamentals_df = pd.DataFrame(
-            fundamentals.items(),
-            columns=["Metric", "Value"]
+    max_drawdown = (
+        drawdown.min()
+    ) * 100
+
+    total_return = (
+        (
+            close.iloc[-1]
+            /
+            close.iloc[0]
+        ) - 1
+    ) * 100
+
+    risk_df = pd.DataFrame({
+        "Metric": [
+            "5 Year Return %",
+            "Annual Volatility %",
+            "Sharpe Ratio",
+            "Max Drawdown %"
+        ],
+        "Value": [
+            round(total_return, 2),
+            round(annual_vol, 2),
+            round(sharpe, 2),
+            round(max_drawdown, 2)
+        ]
+    })
+
+    st.dataframe(
+        risk_df,
+        use_container_width=True
+    )
+
+# =====================================
+# FORECASTING
+# =====================================
+
+with tab4:
+
+    st.subheader("ARIMA Forecast")
+
+    monthly = close.resample("ME").last()
+
+    model = ARIMA(
+        monthly,
+        order=(2,1,2)
+    )
+
+    fitted = model.fit()
+
+    forecast = fitted.forecast(
+        steps=12
+    )
+
+    future_dates = pd.date_range(
+        start=monthly.index[-1] +
+        pd.offsets.MonthEnd(1),
+        periods=12,
+        freq="ME"
+    )
+
+    forecast_fig = go.Figure()
+
+    forecast_fig.add_trace(
+        go.Scatter(
+            x=monthly.index,
+            y=monthly,
+            name="Historical"
         )
+    )
 
-        st.dataframe(
-            fundamentals_df,
-            use_container_width=True
+    forecast_fig.add_trace(
+        go.Scatter(
+            x=future_dates,
+            y=forecast,
+            name="Forecast"
         )
+    )
 
-    except Exception as e:
+    forecast_fig.update_layout(
+        height=600,
+        template="plotly_white"
+    )
 
-        st.warning(
-            f"Fundamental data currently unavailable: {e}"
-        )
+    st.plotly_chart(
+        forecast_fig,
+        use_container_width=True
+    )
+
+    st.dataframe(
+        pd.DataFrame({
+            "Date": future_dates,
+            "Forecast": forecast
+        })
+    )
+```
